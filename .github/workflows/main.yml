@@ -14,12 +14,13 @@ jobs:
         run: |
           SRC_DIR="."
           if [ -f "RockDrumEnhancer_VST3/CMakeLists.txt" ]; then SRC_DIR="RockDrumEnhancer_VST3"; fi
+          perl -pi -e 's/juce::FontOptions/juce::Font/g' "$SRC_DIR/Source/PluginEditor.h" "$SRC_DIR/Source/PluginEditor.cpp"
           cmake -S "$SRC_DIR" -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --parallel
       - uses: actions/upload-artifact@v4
         with:
           name: IronSmash-VST3-Windows-x64
-          path: build/RockDrumEnhancer_artefacts/Release/VST3/**
+          path: build/RockDrumEnhancer_artefacts/**/VST3/**
 
   build-macos:
     runs-on: macos-latest
@@ -30,10 +31,10 @@ jobs:
         run: |
           SRC_DIR="."
           if [ -f "RockDrumEnhancer_VST3/CMakeLists.txt" ]; then SRC_DIR="RockDrumEnhancer_VST3"; fi
+          perl -pi -e 's/juce::FontOptions/juce::Font/g' "$SRC_DIR/Source/PluginEditor.h" "$SRC_DIR/Source/PluginEditor.cpp"
           cmake -S "$SRC_DIR" -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
           cmake --build build --config Release --parallel
       - uses: actions/upload-artifact@v4
         with:
           name: IronSmash-VST3-macOS-Universal
-          path: build/RockDrumEnhancer_artefacts/Release/VST3/**
-        
+          path: build/RockDrumEnhancer_artefacts/**/VST3/**
