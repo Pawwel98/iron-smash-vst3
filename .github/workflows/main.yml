@@ -1,0 +1,39 @@
+name: Build VST3 Plugin
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build VST3
+        shell: bash
+        run: |
+          SRC_DIR="."
+          if [ -f "RockDrumEnhancer_VST3/CMakeLists.txt" ]; then SRC_DIR="RockDrumEnhancer_VST3"; fi
+          cmake -S "$SRC_DIR" -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IronSmash-VST3-Windows-x64
+          path: build/RockDrumEnhancer_artefacts/Release/VST3/**
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build VST3
+        shell: bash
+        run: |
+          SRC_DIR="."
+          if [ -f "RockDrumEnhancer_VST3/CMakeLists.txt" ]; then SRC_DIR="RockDrumEnhancer_VST3"; fi
+          cmake -S "$SRC_DIR" -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+          cmake --build build --config Release --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IronSmash-VST3-macOS-Universal
+          path: build/RockDrumEnhancer_artefacts/Release/VST3/**
+        
