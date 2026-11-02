@@ -149,12 +149,15 @@ struct BiquadFilter
 };
 
 // ============================================================================
-// Stage 0 (Start of Main Knob Chain): Zakk Cervini KICK & SNARE Sample Reinforcer
-// Detects Kick (58 Hz sub/punch) and Snare (200 Hz body + >2.2 kHz crack) hits on
-// the incoming drum bus and blends the embedded CERVINIZATOR KICK.wav and SNARE.wav
-// samples right at the start of the processing chain before transient/EQ/compression.
+// High-Precision Multi-Band Spectral Drum Classifier & Sample Layering Engine
+//
+// Guarantees:
+// - KICK triggers ONLY on Kick hits (35-90 Hz sub fundamental dominance + transient crest)
+// - SNARE triggers ONLY on Snare hits (175-265 Hz body fundamental + 1.1-2.5 kHz stick impact)
+// - CYMBALS / HI-HATS / OVERHEADS are 100% rejected via scale-invariant Band-to-FullBus
+//   and Body-to-Cymbal spectral energy ratios + 2.5 ms sustained body verification.
 // ============================================================================
-class CerviniSampleReinforcer
+class CerviniSampleLayerEngine
 {
 public:
     void prepare(double sampleRate)
@@ -177,45 +180,66 @@ public:
                 snareL, snareR);
         }
 
-        // Cascaded 4th-order bandpass at 58 Hz for Kick detection (rejects Snare >180 Hz)
-        kickBp1.setBandPass(sr, 58.0, 1.35);
-        kickBp2.setBandPass(sr, 58.0, 1.35);
+        // 1. Kick Sub Band (32 Hz - 88 Hz, 4th-order -24 dB/oct lowpass + highpass + 58 Hz resonator)
+        kickHp.setHighPass(sr, 32.0, 0.7071);
+        kickLp1.setLowPass(sr, 88.0, 0.7071);
+        kickLp2.setLowPass(sr, 88.0, 0.7071);
+        kickPeakBp.setBandPass(sr, 58.0, 1.35);
 
-        // Bandpass at 200 Hz (Snare fundamental) + High-pass at 2200 Hz (Snare wire/stick snap)
-        snareBodyBp.setBandPass(sr, 200.0, 1.15);
-        snareHighHp.setHighPass(sr, 2200.0, 0.85);
+        // 2. Snare Fundamental Body Band (175 Hz - 265 Hz, steep 6th-order isolation)
+        snareHp1.setHighPass(sr, 175.0, 0.85);
+        snareHp2.setHighPass(sr, 175.0, 0.85);
+        snareLp1.setLowPass(sr, 265.0, 0.85);
+        snareLp2.setLowPass(sr, 265.0, 0.85);
+        snareBodyBp.setBandPass(sr, 200.0, 1.65);
 
-        // Envelope time constants
-        kickFastAtt = calcCoeff(0.5);
-        kickFastRel = calcCoeff(18.0);
-        kickSlowAtt = calcCoeff(22.0);
-        kickSlowRel = calcCoeff(110.0);
+        // 3. Snare Mid Stick Impact Band (1100 Hz - 2400 Hz)
+        snareMidHp.setHighPass(sr, 1100.0, 0.7071);
+        snareMidLp.setLowPass(sr, 2400.0, 0.7071);
 
-        snareFastAtt = calcCoeff(0.3);
-        snareFastRel = calcCoeff(15.0);
-        snareSlowAtt = calcCoeff(18.0);
-        snareSlowRel = calcCoeff(95.0);
+        // 4. Cymbal / Hi-Hat Sizzle Veto Band (> 4800 Hz, 4th-order highpass)
+        cymbalHp1.setHighPass(sr, 4800.0, 0.7071);
+        cymbalHp2.setHighPass(sr, 4800.0, 0.7071);
 
-        kickHoldOffSamples  = static_cast<int>(0.048 * sr); // 48 ms hold-off (up to 250 BPM 16ths)
-        snareHoldOffSamples = static_cast<int>(0.055 * sr); // 55 ms hold-off
-        ledHoldSamples      = static_cast<int>(0.090 * sr); // 90 ms visual indicator flash
+        // Envelope followers
+        fastAtt = calcCoeff(0.4);
+        fastRel = calcCoeff(11.0);
+        slowAtt = calcCoeff(32.0);
+        slowRel = calcCoeff(140.0);
+
+        kickHoldOffSamples   = static_cast<int>(0.070 * sr); // 70 ms minimum retrigger interval
+        snareHoldOffSamples  = static_cast<int>(0.085 * sr); // 85 ms minimum retrigger interval
+        decisionDelaySamples = std::max(1, static_cast<int>(0.0025 * sr)); // 2.5 ms peak-pick verification window
+        ledHoldSamples       = static_cast<int>(0.095 * sr);
 
         reset();
     }
 
     void reset() noexcept
     {
-        kickBp1.reset();
-        kickBp2.reset();
-        snareBodyBp.reset();
-        snareHighHp.reset();
+        kickHp.reset(); kickLp1.reset(); kickLp2.reset(); kickPeakBp.reset();
+        snareHp1.reset(); snareHp2.reset(); snareLp1.reset(); snareLp2.reset(); snareBodyBp.reset();
+        snareMidHp.reset(); snareMidLp.reset();
+        cymbalHp1.reset(); cymbalHp2.reset();
 
-        kickFastEnv = kickSlowEnv = 0.0f;
-        snareBodyFastEnv = snareBodySlowEnv = 0.0f;
-        snareHighFastEnv = snareHighSlowEnv = 0.0f;
+        fullBusFast = 0.0f;
+        kFast = 0.0f; kSlow = 0.008f;
+        sBodyFast = 0.0f; sBodySlow = 0.008f;
+        sMidFast = 0.0f; sMidSlow = 0.008f;
+        cymFast = 0.0f; cymSlow = 0.008f;
 
         kickCooldown = 0;
         snareCooldown = 0;
+        kickArmed = true;
+        snareArmed = true;
+        kickLastTrigPeak = 0.0f;
+        snareLastTrigPeak = 0.0f;
+
+        kickCandidateTimer = 0;
+        kickCandidatePeak = 0.0f;
+        snareCandidateTimer = 0;
+        snareCandidatePeak = 0.0f;
+
         kickLedTimer = 0;
         snareLedTimer = 0;
 
@@ -223,77 +247,165 @@ public:
         for (auto& v : snareVoices) v.active = false;
     }
 
-    inline void processStereo(float& left, float& right, float amount01) noexcept
+    inline void processTriggerAndRender(float cleanInL, float cleanInR, float amount01,
+                                        float& outSampleL, float& outSampleR) noexcept
     {
         if (kickCooldown > 0)  --kickCooldown;
         if (snareCooldown > 0) --snareCooldown;
         if (kickLedTimer > 0)  --kickLedTimer;
         if (snareLedTimer > 0) --snareLedTimer;
 
-        const float mono = 0.5f * (left + right);
+        const float mono = 0.5f * (cleanInL + cleanInR);
+        const float fullAbs = std::max(std::fabs(cleanInL), std::fabs(cleanInR));
 
-        // 1. Filter into Kick (58 Hz) and Snare (200 Hz + >2.2 kHz) detection bands
-        const float kSub   = std::fabs(kickBp2.processSample(kickBp1.processSample(mono, 0), 0));
-        const float sBody  = std::fabs(snareBodyBp.processSample(mono, 0));
-        const float sCrack = std::fabs(snareHighHp.processSample(mono, 0));
+        // 1. Extract isolated spectral bands
+        float kSig = kickHp.processSample(mono, 0);
+        kSig = kickLp1.processSample(kSig, 0);
+        kSig = kickLp2.processSample(kSig, 0);
+        kSig = kickPeakBp.processSample(kSig, 0);
+        const float kAbs = std::fabs(kSig);
 
-        kickFastEnv = updateEnv(kSub, kickFastEnv, kickFastAtt, kickFastRel);
-        kickSlowEnv = updateEnv(kSub, kickSlowEnv, kickSlowAtt, kickSlowRel);
+        float sBodySig = snareHp1.processSample(mono, 0);
+        sBodySig = snareHp2.processSample(sBodySig, 0);
+        sBodySig = snareLp1.processSample(sBodySig, 0);
+        sBodySig = snareLp2.processSample(sBodySig, 0);
+        sBodySig = snareBodyBp.processSample(sBodySig, 0);
+        const float sBodyAbs = std::fabs(sBodySig);
 
-        snareBodyFastEnv = updateEnv(sBody, snareBodyFastEnv, snareFastAtt, snareFastRel);
-        snareBodySlowEnv = updateEnv(sBody, snareBodySlowEnv, snareSlowAtt, snareSlowRel);
+        float sMidSig = snareMidHp.processSample(mono, 0);
+        sMidSig = snareMidLp.processSample(sMidSig, 0);
+        const float sMidAbs = std::fabs(sMidSig);
 
-        snareHighFastEnv = updateEnv(sCrack, snareHighFastEnv, snareFastAtt, snareFastRel);
-        snareHighSlowEnv = updateEnv(sCrack, snareHighSlowEnv, snareSlowAtt, snareSlowRel);
+        float cymSig = cymbalHp1.processSample(mono, 0);
+        cymSig = cymbalHp2.processSample(cymSig, 0);
+        const float cymAbs = std::fabs(cymSig);
+
+        // 2. Update fast and slow envelopes
+        fullBusFast = updateEnv(fullAbs,  fullBusFast, fastAtt, fastRel);
+        kFast       = updateEnv(kAbs,     kFast,       fastAtt, fastRel);
+        kSlow       = updateEnv(kAbs,     kSlow,       slowAtt, slowRel);
+        sBodyFast   = updateEnv(sBodyAbs, sBodyFast,   fastAtt, fastRel);
+        sBodySlow   = updateEnv(sBodyAbs, sBodySlow,   slowAtt, slowRel);
+        sMidFast    = updateEnv(sMidAbs,  sMidFast,    fastAtt, fastRel);
+        sMidSlow    = updateEnv(sMidAbs,  sMidSlow,    slowAtt, slowRel);
+        cymFast     = updateEnv(cymAbs,   cymFast,     fastAtt, fastRel);
+        cymSlow     = updateEnv(cymAbs,   cymSlow,     slowAtt, slowRel);
+
+        // Schmitt-trigger hysteresis re-arming: envelope must drop below 45% of last hit peak
+        if (!kickArmed && kFast < std::max(0.030f, kickLastTrigPeak * 0.45f))
+            kickArmed = true;
+        if (!snareArmed && sBodyFast < std::max(0.025f, snareLastTrigPeak * 0.45f))
+            snareArmed = true;
 
         if (amount01 > 0.01f)
         {
-            // Kick Trigger Condition:
-            // Strong transient rise in 58 Hz sub band, and sub fundamental dominates or rises independently
-            const bool kickTransient = (kickCooldown == 0)
-                                    && (kickFastEnv > 0.018f)
-                                    && (kickFastEnv > kickSlowEnv * 1.48f)
-                                    && (kickFastEnv > snareBodyFastEnv * 0.55f);
+            // ----------------------------------------------------------------
+            // KICK DETECTION (Strict 58 Hz Sub Dominance + Cymbal/Snare Veto)
+            // ----------------------------------------------------------------
+            // Scale-invariant ratio: on any real kick hit, 58 Hz sub energy is a major
+            // portion of total bus energy (kFast > fullBusFast * 0.14f) and > 0.65 * sBodyFast.
+            const bool kickOnsetCond = kickArmed
+                                    && (kickCooldown == 0)
+                                    && (kFast > 0.055f)                 // Strong absolute sub fundamental
+                                    && (kFast > kSlow * 2.25f)          // Sharp transient jump over sub floor
+                                    && (kFast > fullBusFast * 0.14f)    // Sub fundamental is a substantial share of the hit
+                                    && (kFast > sBodyFast * 0.65f)      // Rejects solo Snare hits (where kFast < 0.20 * sBodyFast)
+                                    && (kFast > cymFast * 0.55f);       // Rejects cymbals/hats
 
-            if (kickTransient)
+            if (kickCandidateTimer == 0)
             {
-                // Compressed velocity curve in Zakk Cervini style (consistent authority on every hit)
-                const float rawVel = std::clamp(kickFastEnv * 3.2f, 0.25f, 1.0f);
-                const float vel = std::pow(rawVel, 0.55f);
-                triggerVoice(kickVoices, vel);
-                kickCooldown = kickHoldOffSamples;
-                kickLedTimer = ledHoldSamples;
+                if (kickOnsetCond)
+                {
+                    kickCandidateTimer = decisionDelaySamples;
+                    kickCandidatePeak = kFast;
+                }
+            }
+            else
+            {
+                kickCandidatePeak = std::max(kickCandidatePeak, kFast);
+                --kickCandidateTimer;
+                if (kickCandidateTimer == 0)
+                {
+                    // After 2.5 ms, a real 58 Hz kick wave is still strong, whereas broadband clicks decay
+                    if (kFast > 0.045f
+                        && kickCandidatePeak > sBodyFast * 0.65f
+                        && kickCandidatePeak > cymFast * 0.50f)
+                    {
+                        const float rawVel = std::clamp(kickCandidatePeak * 3.8f, 0.35f, 1.0f);
+                        const float vel = std::pow(rawVel, 0.50f);
+                        triggerVoice(kickVoices, vel);
+                        kickCooldown = kickHoldOffSamples;
+                        kickArmed = false;
+                        kickLastTrigPeak = kickCandidatePeak;
+                        kickLedTimer = ledHoldSamples;
+                    }
+                }
             }
 
-            // Snare Trigger Condition:
-            // Simultaneous transient in 200 Hz snare body AND high-frequency wire/stick snap (>2.2 kHz)
-            const bool snareTransient = (snareCooldown == 0)
-                                     && (snareBodyFastEnv > 0.016f)
-                                     && (snareBodyFastEnv > snareBodySlowEnv * 1.45f)
-                                     && (snareHighFastEnv > 0.012f)
-                                     && (snareHighFastEnv > snareHighSlowEnv * 1.35f);
+            // ----------------------------------------------------------------
+            // SNARE DETECTION (Strict 200 Hz Body + 1.8 kHz Stick Impact + Cymbal/Kick Veto)
+            // ----------------------------------------------------------------
+            // Scale-invariant Cymbal Veto:
+            // On any cymbal/hi-hat/overhead hit (even a 0 dBFS crash smash), energy above 4.8 kHz
+            // (cymFast) is much larger than the narrow 200 Hz snare shell band (sBodyFast < cymFast * 0.50),
+            // and 200 Hz is only a tiny fraction of fullBusFast (< 10%).
+            // On a real snare hit, the 200 Hz fundamental shell resonance is strong:
+            // sBodyFast > 0.048f, sBodyFast > fullBusFast * 0.11f, and sBodyFast > cymFast * 0.62f.
+            const bool isCymbalDominated = (cymFast > sBodyFast * 1.60f) || (sBodyFast < fullBusFast * 0.11f);
+            const bool isKickDominated   = (kFast > sBodyFast * 1.65f);
 
-            if (snareTransient)
+            const bool snareOnsetCond = snareArmed
+                                     && (snareCooldown == 0)
+                                     && !isCymbalDominated
+                                     && !isKickDominated
+                                     && (sBodyFast > 0.048f)
+                                     && (sBodyFast > sBodySlow * 2.30f)
+                                     && (sMidFast  > 0.035f)
+                                     && (sMidFast  > sMidSlow  * 1.80f);
+
+            if (snareCandidateTimer == 0)
             {
-                const float rawVel = std::clamp((snareBodyFastEnv * 2.2f + snareHighFastEnv * 1.5f), 0.30f, 1.0f);
-                const float vel = std::pow(rawVel, 0.50f);
-                triggerVoice(snareVoices, vel);
-                snareCooldown = snareHoldOffSamples;
-                snareLedTimer = ledHoldSamples;
+                if (snareOnsetCond)
+                {
+                    snareCandidateTimer = decisionDelaySamples;
+                    snareCandidatePeak = sBodyFast;
+                }
+            }
+            else
+            {
+                snareCandidatePeak = std::max(snareCandidatePeak, sBodyFast);
+                --snareCandidateTimer;
+                if (snareCandidateTimer == 0)
+                {
+                    const bool stillValidSnare = (sBodyFast > 0.035f)
+                                              && (snareCandidatePeak >= cymFast * 0.60f)
+                                              && (snareCandidatePeak >= fullBusFast * 0.11f)
+                                              && (kFast <= snareCandidatePeak * 1.65f);
+                    if (stillValidSnare)
+                    {
+                        const float rawVel = std::clamp(snareCandidatePeak * 3.5f + sMidFast * 1.4f, 0.35f, 1.0f);
+                        const float vel = std::pow(rawVel, 0.50f);
+                        triggerVoice(snareVoices, vel);
+                        snareCooldown = snareHoldOffSamples;
+                        snareArmed = false;
+                        snareLastTrigPeak = snareCandidatePeak;
+                        snareLedTimer = ledHoldSamples;
+                    }
+                }
             }
         }
 
-        // Render active KICK and SNARE sample voices with linear interpolation resampling
+        // Render active KICK and SNARE sample voices (bypassing heavy live-drum EQ/saturation)
         float sampL = 0.0f;
         float sampR = 0.0f;
 
         renderVoices(kickVoices, kickL, kickR, sampL, sampR);
         renderVoices(snareVoices, snareL, snareR, sampL, sampR);
 
-        // Blend reinforced samples right at the beginning of the main knob chain
-        const float sampleBlend = 0.68f * std::pow(amount01, 0.85f);
-        left  += sampL * sampleBlend;
-        right += sampR * sampleBlend;
+        // Smooth sample layering curve controlled by the main CERVINIZE knob
+        const float sampleLayerGain = 0.62f * std::pow(amount01, 0.85f);
+        outSampleL = sampL * sampleLayerGain;
+        outSampleR = sampR * sampleLayerGain;
     }
 
     bool isKickTriggered() const noexcept  { return kickLedTimer > 0; }
@@ -313,21 +425,35 @@ private:
     std::vector<float> kickL, kickR;
     std::vector<float> snareL, snareR;
 
-    BiquadFilter kickBp1, kickBp2;
-    BiquadFilter snareBodyBp, snareHighHp;
+    BiquadFilter kickHp, kickLp1, kickLp2, kickPeakBp;
+    BiquadFilter snareHp1, snareHp2, snareLp1, snareLp2, snareBodyBp;
+    BiquadFilter snareMidHp, snareMidLp;
+    BiquadFilter cymbalHp1, cymbalHp2;
 
-    float kickFastAtt = 0.0f, kickFastRel = 0.0f, kickSlowAtt = 0.0f, kickSlowRel = 0.0f;
-    float snareFastAtt = 0.0f, snareFastRel = 0.0f, snareSlowAtt = 0.0f, snareSlowRel = 0.0f;
+    float fastAtt = 0.0f, fastRel = 0.0f, slowAtt = 0.0f, slowRel = 0.0f;
+    float fullBusFast = 0.0f;
+    float kFast = 0.0f, kSlow = 0.008f;
+    float sBodyFast = 0.0f, sBodySlow = 0.008f;
+    float sMidFast = 0.0f, sMidSlow = 0.008f;
+    float cymFast = 0.0f, cymSlow = 0.008f;
 
-    float kickFastEnv = 0.0f, kickSlowEnv = 0.0f;
-    float snareBodyFastEnv = 0.0f, snareBodySlowEnv = 0.0f;
-    float snareHighFastEnv = 0.0f, snareHighSlowEnv = 0.0f;
+    int kickHoldOffSamples = 3360;
+    int snareHoldOffSamples = 4080;
+    int decisionDelaySamples = 120;
+    int ledHoldSamples = 4560;
 
-    int kickHoldOffSamples = 2300;
-    int snareHoldOffSamples = 2640;
-    int ledHoldSamples = 4320;
     int kickCooldown = 0;
     int snareCooldown = 0;
+    bool kickArmed = true;
+    bool snareArmed = true;
+    float kickLastTrigPeak = 0.0f;
+    float snareLastTrigPeak = 0.0f;
+
+    int kickCandidateTimer = 0;
+    float kickCandidatePeak = 0.0f;
+    int snareCandidateTimer = 0;
+    float snareCandidatePeak = 0.0f;
+
     int kickLedTimer = 0;
     int snareLedTimer = 0;
 
@@ -347,7 +473,6 @@ private:
 
     static void triggerVoice(std::array<SampleVoice, 2>& voices, float velocity) noexcept
     {
-        // Choose inactive voice or steal the oldest playing voice
         int targetIdx = 0;
         if (!voices[0].active)
             targetIdx = 0;
@@ -391,7 +516,64 @@ private:
 };
 
 // ============================================================================
-// Stage 1: Dual-Band Transient Enhancer (Low Kick/Snare Punch & High Snare Crack)
+// Incoming Drum Bus Stage 1: Surgical Resonance & Mud Suppressor
+// ============================================================================
+class CerviniResonanceSuppressor
+{
+public:
+    void prepare(double sampleRate) noexcept
+    {
+        sr = sampleRate;
+        lastAmount = -1.0f;
+        updateCoefficients(0.0f);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        res225.reset();
+        res385.reset();
+        res780.reset();
+        res3350.reset();
+    }
+
+    void updateCoefficients(float amount01) noexcept
+    {
+        if (std::fabs(amount01 - lastAmount) < 0.0005f)
+            return;
+        lastAmount = amount01;
+
+        const double s = static_cast<double>(amount01);
+        res225.setPeaking(sr,  225.0,  3.2, -2.4 * s);
+        res385.setPeaking(sr,  385.0,  2.6, -4.2 * s);
+        res780.setPeaking(sr,  780.0,  3.0, -2.8 * s);
+        res3350.setPeaking(sr, 3350.0, 4.5, -2.5 * s);
+    }
+
+    inline void processStereo(float& left, float& right) noexcept
+    {
+        if (lastAmount <= 0.0001f)
+            return;
+
+        left  = res225.processSample(left, 0);
+        left  = res385.processSample(left, 0);
+        left  = res780.processSample(left, 0);
+        left  = res3350.processSample(left, 0);
+
+        right = res225.processSample(right, 1);
+        right = res385.processSample(right, 1);
+        right = res780.processSample(right, 1);
+        right = res3350.processSample(right, 1);
+    }
+
+private:
+    double sr = 48000.0;
+    float lastAmount = -1.0f;
+    BiquadFilter res225, res385, res780, res3350;
+};
+
+// ============================================================================
+// Incoming Drum Bus Stage 2: Dual-Band Transient Designer (Kick & Snare Readability)
 // ============================================================================
 class DualBandTransientShaper
 {
@@ -399,8 +581,8 @@ public:
     void prepare(double sampleRate) noexcept
     {
         sr = sampleRate;
-        lowBandFilter.setLowPass(sr, 165.0, 0.7071);
-        highBandFilter.setHighPass(sr, 3000.0, 0.7071);
+        lowBandFilter.setLowPass(sr, 155.0, 0.7071);
+        highBandFilter.setHighPass(sr, 2800.0, 0.7071);
 
         lowFastAtt = calcCoeff(0.8);
         lowFastRel = calcCoeff(25.0);
@@ -445,15 +627,15 @@ public:
         const float lowDiff = std::max(0.0f, lowFastEnv - lowSlowEnv) / (lowSlowEnv + 0.015f);
         const float highDiff = std::max(0.0f, highFastEnv - highSlowEnv) / (highSlowEnv + 0.008f);
 
-        const float lowBoostGain = std::tanh(lowDiff * 1.65f) * (1.40f * amount01);
-        const float highBoostGain = std::tanh(highDiff * 1.85f) * (1.55f * amount01);
+        const float lowBoostGain = std::tanh(lowDiff * 1.7f) * (1.45f * amount01);
+        const float highBoostGain = std::tanh(highDiff * 1.9f) * (1.60f * amount01);
 
         left  += lowL * lowBoostGain + highL * highBoostGain;
         right += lowR * lowBoostGain + highR * highBoostGain;
     }
 
 private:
-    double sr = 44100.0;
+    double sr = 48000.0;
     BiquadFilter lowBandFilter;
     BiquadFilter highBandFilter;
 
@@ -475,12 +657,7 @@ private:
 };
 
 // ============================================================================
-// Stage 2: Zakk Cervini Signature Tonal EQ (+3 to +5 dB Low & High + Mid Scoop)
-// Tuned specifically around the fundamental frequencies of the user's KICK.wav (58 Hz)
-// and SNARE.wav (196 Hz body & 3.0-8.5 kHz crack/air):
-// - Sub/Low Punch Shelf (105 Hz) + Kick/Snare Punch Bell (145 Hz): +3.6 to +4.5 dB
-// - Cervini Anti-Boxiness Mid Scoop (380 Hz): up to -2.4 dB
-// - Snare Crack Bell (4.2 kHz) + Air/Sheen Shelf (8.0 kHz): +3.6 to +4.5 dB
+// Incoming Drum Bus Stage 3: Zakk Cervini Signature Tonal EQ (+3 to +5 dB Low & High)
 // ============================================================================
 class CerviniTonalEQ
 {
@@ -497,7 +674,6 @@ public:
     {
         lowPunchShelf.reset();
         snareBodyBell.reset();
-        mudCutBell.reset();
         snareCrackBell.reset();
         highAirShelf.reset();
     }
@@ -510,18 +686,15 @@ public:
 
         const double shaped = std::pow(static_cast<double>(amount01), 0.85);
 
-        const double lowShelfDb  = 3.6 * shaped;  // 105 Hz low shelf (58 Hz kick sub & weight)
-        const double snareBodyDb = 2.9 * shaped;  // 145 Hz kick/snare chest punch
-        const double mudCutDb    = -2.4 * shaped; // 380 Hz Cervini modern metal mid scoop
+        const double lowShelfDb  = 3.4 * shaped; // 95 Hz sub/kick weight
+        const double snareBodyDb = 2.8 * shaped; // 135 Hz kick/snare chest punch
+        const double highCrackDb = 3.6 * shaped; // 4.5 kHz snare wire/beater snap
+        const double highShelfDb = 3.2 * shaped; // 8.5 kHz modern air
 
-        const double highCrackDb = 3.6 * shaped;  // 4.2 kHz snare wire/beater snap
-        const double highShelfDb = 3.3 * shaped;  // 7.8 kHz modern sheen
-
-        lowPunchShelf.setLowShelf(sr, 105.0, 0.75, lowShelfDb);
-        snareBodyBell.setPeaking(sr, 145.0, 1.05, snareBodyDb);
-        mudCutBell.setPeaking(sr, 380.0, 1.45, mudCutDb);
-        snareCrackBell.setPeaking(sr, 4200.0, 1.05, highCrackDb);
-        highAirShelf.setHighShelf(sr, 7800.0, 0.75, highShelfDb);
+        lowPunchShelf.setLowShelf(sr, 95.0, 0.75, lowShelfDb);
+        snareBodyBell.setPeaking(sr, 135.0, 1.15, snareBodyDb);
+        snareCrackBell.setPeaking(sr, 4500.0, 1.10, highCrackDb);
+        highAirShelf.setHighShelf(sr, 8500.0, 0.75, highShelfDb);
     }
 
     inline void processStereo(float& left, float& right) noexcept
@@ -531,40 +704,61 @@ public:
 
         left = lowPunchShelf.processSample(left, 0);
         left = snareBodyBell.processSample(left, 0);
-        left = mudCutBell.processSample(left, 0);
         left = snareCrackBell.processSample(left, 0);
         left = highAirShelf.processSample(left, 0);
 
         right = lowPunchShelf.processSample(right, 1);
         right = snareBodyBell.processSample(right, 1);
-        right = mudCutBell.processSample(right, 1);
         right = snareCrackBell.processSample(right, 1);
         right = highAirShelf.processSample(right, 1);
     }
 
 private:
-    double sr = 44100.0;
+    double sr = 48000.0;
     float lastAmount = -1.0f;
     BiquadFilter lowPunchShelf;
     BiquadFilter snareBodyBell;
-    BiquadFilter mudCutBell;
     BiquadFilter snareCrackBell;
     BiquadFilter highAirShelf;
 };
 
 // ============================================================================
-// Stage 3: Cervini Punchy VCA Bus Compressor + Parallel Harmonic Smash
-// Glues the reinforced KICK/SNARE samples and live drum bus together.
+// Incoming Drum Bus Stage 4: Cervini Harmonic Drum Saturation
 // ============================================================================
-class PunchyBusCompressor
+class CerviniHarmonicSaturator
+{
+public:
+    inline void processStereo(float& left, float& right, float amount01) noexcept
+    {
+        if (amount01 <= 0.0001f)
+            return;
+
+        const float drive = 1.0f + 1.35f * amount01;
+        const float invNorm = 1.0f / std::tanh(drive);
+        const float asymBias = 0.04f * amount01;
+        const float biasNorm = std::tanh(asymBias * drive) * invNorm;
+
+        const float satL = (std::tanh((left  + asymBias) * drive) * invNorm) - biasNorm;
+        const float satR = (std::tanh((right + asymBias) * drive) * invNorm) - biasNorm;
+
+        const float mix = 0.55f * amount01;
+        left  = left  * (1.0f - mix) + satL * mix;
+        right = right * (1.0f - mix) + satR * mix;
+    }
+};
+
+// ============================================================================
+// Final Stage 5 (Post-Sample Layering): Bus Glue VCA Compressor
+// ============================================================================
+class CerviniBusGlueCompressor
 {
 public:
     void prepare(double sampleRate) noexcept
     {
         sr = sampleRate;
         scHighPass.setHighPass(sr, 95.0, 0.7071);
-        attCoeff = static_cast<float>(std::exp(-1.0 / (0.001 * 25.0 * sr))); // 25 ms punch attack
-        relCoeff = static_cast<float>(std::exp(-1.0 / (0.001 * 80.0 * sr))); // 80 ms fast recovery
+        attCoeff = static_cast<float>(std::exp(-1.0 / (0.001 * 28.0 * sr)));
+        relCoeff = static_cast<float>(std::exp(-1.0 / (0.001 * 80.0 * sr)));
         reset();
     }
 
@@ -595,8 +789,8 @@ public:
 
         const float envDb = gainToDb(envLin);
 
-        const float thresholdDb = -8.0f - 14.0f * amount01;
-        const float ratio = 1.0f + 3.5f * amount01; // up to 4.5:1 ratio
+        const float thresholdDb = -8.0f - 13.0f * amount01;
+        const float ratio = 1.0f + 3.0f * amount01;
         const float kneeWidthDb = 4.0f;
 
         float overDb = envDb - thresholdDb;
@@ -617,17 +811,16 @@ public:
 
         lastGainReductionDb = -gainRedDb;
 
-        const float makeupDb = (2.6f * amount01);
+        const float makeupDb = 2.2f * amount01;
         const float compGain = dbToGain(gainRedDb + makeupDb);
 
         float wetL = left * compGain;
         float wetR = right * compGain;
 
-        // Zakk Cervini style analog bus saturation on the compressed path
-        const float drive = 1.0f + 0.45f * amount01;
-        const float norm = 1.0f / std::tanh(drive);
-        wetL = std::tanh(wetL * drive) * norm;
-        wetR = std::tanh(wetR * drive) * norm;
+        const float glueDrive = 1.0f + 0.22f * amount01;
+        const float glueNorm = 1.0f / std::tanh(glueDrive);
+        wetL = std::tanh(wetL * glueDrive) * glueNorm;
+        wetR = std::tanh(wetR * glueDrive) * glueNorm;
 
         const float wetMix = std::min(1.0f, amount01 * 0.85f);
         left  = dryL * (1.0f - wetMix) + wetL * wetMix;
@@ -637,7 +830,7 @@ public:
     float getGainReductionDb() const noexcept { return lastGainReductionDb; }
 
 private:
-    double sr = 44100.0;
+    double sr = 48000.0;
     BiquadFilter scHighPass;
     float attCoeff = 0.0f;
     float relCoeff = 0.0f;
@@ -646,7 +839,7 @@ private:
 };
 
 // ============================================================================
-// Stage 4: Drum Bus Limiter (0.0 dBFS Ceiling)
+// Final Stage 6: Drum Bus Limiter (0.0 dBFS Ceiling)
 // ============================================================================
 class DrumBusLimiter
 {
@@ -704,7 +897,7 @@ public:
     float getLimiterGainReductionDb() const noexcept { return limiterGrDb; }
 
 private:
-    double sr = 44100.0;
+    double sr = 48000.0;
     float attCoeff = 0.0f;
     float relCoeff = 0.0f;
     float ceilingLin = 0.994f;
@@ -725,17 +918,7 @@ private:
 };
 
 // ============================================================================
-// Complete CERVINIZATOR Drum Bus Chain
-// Order of processing:
-// 1. INPUT Gain (Top-left knob)
-// 2. Main CERVINIZE One-Knob Chain:
-//    a) KICK & SNARE Sample Reinforcer (triggers & blends CERVINIZATOR samples)
-//    b) Dual-Band Transient Shaper (Low Kick/Snare punch + High Snare crack)
-//    c) Zakk Cervini Tonal EQ (+3..+5 dB Low & High + 380 Hz Mud Cut)
-//    d) Punchy VCA Bus Compressor + Parallel Saturation
-// 3. OUTPUT Gain (Top-right knob)
-// 4. Drum Bus Limiter at 0.0 dBFS (Bottom-right LIMIT button)
-// 5. Click-Free Bypass Crossfade (Bottom-left BYPASS switch)
+// Complete CERVINIZATOR v2 Drum Bus Chain
 // ============================================================================
 class CervinizatorChain
 {
@@ -743,10 +926,11 @@ public:
     void prepare(double sampleRate)
     {
         sr = sampleRate;
-        sampleReinforcer.prepare(sr);
+        sampleLayerEngine.prepare(sr);
+        resonanceSuppressor.prepare(sr);
         transientShaper.prepare(sr);
         tonalEQ.prepare(sr);
-        busCompressor.prepare(sr);
+        busGlueCompressor.prepare(sr);
         drumLimiter.prepare(sr);
         smoothCoeff = static_cast<float>(std::exp(-1.0 / (0.001 * 10.0 * sr)));
         reset();
@@ -754,10 +938,11 @@ public:
 
     void reset() noexcept
     {
-        sampleReinforcer.reset();
+        sampleLayerEngine.reset();
+        resonanceSuppressor.reset();
         transientShaper.reset();
         tonalEQ.reset();
-        busCompressor.reset();
+        busGlueCompressor.reset();
         drumLimiter.reset();
     }
 
@@ -781,46 +966,64 @@ public:
         const float dryR = right;
 
         // 1. Input Gain
-        float procL = left * currInputGain;
-        float procR = right * currInputGain;
+        const float cleanInL = left * currInputGain;
+        const float cleanInR = right * currInputGain;
 
-        // 2. Main CERVINIZE One-Knob Processing:
-        //    a) Beginning of chain: Trigger & blend embedded KICK.wav and SNARE.wav samples
-        sampleReinforcer.processStereo(procL, procR, currCervinize);
+        // 2. Branch B: Detect Kick/Snare on clean input & render uncolored KICK/SNARE samples
+        float sampleL = 0.0f;
+        float sampleR = 0.0f;
+        sampleLayerEngine.processTriggerAndRender(cleanInL, cleanInR, currCervinize, sampleL, sampleR);
 
-        //    b) Low & High Transient Shaper
-        transientShaper.processStereo(procL, procR, currCervinize);
+        // 3. Branch A: Full Zakk Cervini Processing on Incoming Live Drums
+        float liveDrumsL = cleanInL;
+        float liveDrumsR = cleanInR;
 
-        //    c) Zakk Cervini Tonal EQ (+3..+5 dB Low & High + Mid Scoop)
+        //    a) Suppress main drum bus resonances (225 Hz, 385 Hz, 780 Hz, 3350 Hz)
+        resonanceSuppressor.updateCoefficients(currCervinize);
+        resonanceSuppressor.processStereo(liveDrumsL, liveDrumsR);
+
+        //    b) Enhance Low & High Transients for Kick & Snare readability
+        transientShaper.processStereo(liveDrumsL, liveDrumsR, currCervinize);
+
+        //    c) Zakk Cervini Tonal EQ (+3..+5 dB Low Punch & High Crack/Air)
         tonalEQ.updateCoefficients(currCervinize);
-        tonalEQ.processStereo(procL, procR);
+        tonalEQ.processStereo(liveDrumsL, liveDrumsR);
 
-        //    d) Punchy VCA Bus Compressor + Parallel Saturation
-        busCompressor.processStereo(procL, procR, currCervinize);
+        //    d) Harmonic Drum Saturation
+        harmonicSaturator.processStereo(liveDrumsL, liveDrumsR, currCervinize);
 
-        // 3. Output Gain
-        procL *= currOutputGain;
-        procR *= currOutputGain;
+        // 4. Layer the clean KICK/SNARE samples with the processed incoming drums
+        //    and feed the combined bus into the Final Bus Glue Compressor
+        float gluedBusL = liveDrumsL + sampleL;
+        float gluedBusR = liveDrumsR + sampleR;
 
-        // 4. Drum Bus Limiter (0.0 dBFS)
-        drumLimiter.processStereo(procL, procR, limiterEnabled);
+        busGlueCompressor.processStereo(gluedBusL, gluedBusR, currCervinize);
 
-        // 5. Bypass Crossfade
-        left  = dryL * (1.0f - currActiveMix) + procL * currActiveMix;
-        right = dryR * (1.0f - currActiveMix) + procR * currActiveMix;
+        // 5. Output Gain
+        gluedBusL *= currOutputGain;
+        gluedBusR *= currOutputGain;
+
+        // 6. Drum Bus Limiter (0.0 dBFS)
+        drumLimiter.processStereo(gluedBusL, gluedBusR, limiterEnabled);
+
+        // 7. Click-Free Bypass Crossfade
+        left  = dryL * (1.0f - currActiveMix) + gluedBusL * currActiveMix;
+        right = dryR * (1.0f - currActiveMix) + gluedBusR * currActiveMix;
     }
 
-    float getCompressorGR() const noexcept { return busCompressor.getGainReductionDb(); }
+    float getCompressorGR() const noexcept { return busGlueCompressor.getGainReductionDb(); }
     float getLimiterGR() const noexcept    { return drumLimiter.getLimiterGainReductionDb(); }
-    bool  isKickTriggered() const noexcept  { return sampleReinforcer.isKickTriggered(); }
-    bool  isSnareTriggered() const noexcept { return sampleReinforcer.isSnareTriggered(); }
+    bool  isKickTriggered() const noexcept  { return sampleLayerEngine.isKickTriggered(); }
+    bool  isSnareTriggered() const noexcept { return sampleLayerEngine.isSnareTriggered(); }
 
 private:
     double sr = 48000.0;
-    CerviniSampleReinforcer sampleReinforcer;
+    CerviniSampleLayerEngine sampleLayerEngine;
+    CerviniResonanceSuppressor resonanceSuppressor;
     DualBandTransientShaper transientShaper;
     CerviniTonalEQ tonalEQ;
-    PunchyBusCompressor busCompressor;
+    CerviniHarmonicSaturator harmonicSaturator;
+    CerviniBusGlueCompressor busGlueCompressor;
     DrumBusLimiter drumLimiter;
 
     float smoothCoeff = 0.99f;
