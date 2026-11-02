@@ -2,13 +2,13 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
-#include "DrumBusDSP.h"
+#include "CervinizatorDSP.h"
 
-class RockDrumEnhancerAudioProcessor : public juce::AudioProcessor
+class CervinizatorAudioProcessor : public juce::AudioProcessor
 {
 public:
-    RockDrumEnhancerAudioProcessor();
-    ~RockDrumEnhancerAudioProcessor() override = default;
+    CervinizatorAudioProcessor();
+    ~CervinizatorAudioProcessor() override = default;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -26,7 +26,7 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.15; }
+    double getTailLengthSeconds() const override { return 1.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -40,14 +40,16 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Thread-safe metering for the GUI
-    float getInputLevelDb() const noexcept  { return inputPeakDb.load(std::memory_order_relaxed); }
-    float getOutputLevelDb() const noexcept { return outputPeakDb.load(std::memory_order_relaxed); }
+    // Thread-safe metering & trigger indicators for the GUI
+    float getInputLevelDb() const noexcept        { return inputPeakDb.load(std::memory_order_relaxed); }
+    float getOutputLevelDb() const noexcept       { return outputPeakDb.load(std::memory_order_relaxed); }
     float getTotalGainReductionDb() const noexcept { return totalGrDb.load(std::memory_order_relaxed); }
-    bool  isLimiterClipping() const noexcept { return limiterActiveFlag.load(std::memory_order_relaxed); }
+    bool  isLimiterClipping() const noexcept      { return limiterActiveFlag.load(std::memory_order_relaxed); }
+    bool  isKickTriggered() const noexcept        { return kickTrigFlag.load(std::memory_order_relaxed); }
+    bool  isSnareTriggered() const noexcept       { return snareTrigFlag.load(std::memory_order_relaxed); }
 
 private:
-    IronSmashDSP::DrumBusChain dspChain;
+    CervinizatorDSP::CervinizatorChain dspChain;
 
     std::atomic<float>* inputParam   = nullptr;
     std::atomic<float>* enhanceParam = nullptr;
@@ -59,6 +61,8 @@ private:
     std::atomic<float> outputPeakDb { -60.0f };
     std::atomic<float> totalGrDb    { 0.0f };
     std::atomic<bool>  limiterActiveFlag { false };
+    std::atomic<bool>  kickTrigFlag      { false };
+    std::atomic<bool>  snareTrigFlag     { false };
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RockDrumEnhancerAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CervinizatorAudioProcessor)
 };

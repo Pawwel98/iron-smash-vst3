@@ -1,12 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(RockDrumEnhancer VERSION 1.0.0 LANGUAGES C CXX)
+project(CERVINIZATOR VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Automatically fetch JUCE 7.0.12 if a local JUCE directory is not provided
+if (MSVC)
+    add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif()
+
 include(FetchContent)
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/JUCE/CMakeLists.txt")
     add_subdirectory(JUCE)
@@ -22,17 +25,18 @@ else()
 endif()
 
 juce_add_plugin(RockDrumEnhancer
-    COMPANY_NAME                "IronSmashAudio"
-    PLUGIN_MANUFACTURER_CODE    Isma
-    PLUGIN_CODE                 Irsm
+    COMPANY_NAME                "CervinizatorAudio"
+    PLUGIN_MANUFACTURER_CODE    Crvn
+    PLUGIN_CODE                 Crvz
     FORMATS                     VST3 Standalone
-    PRODUCT_NAME                "Iron Smash Drum Enhancer"
+    PRODUCT_NAME                "CERVINIZATOR"
     IS_SYNTH                    FALSE
     NEEDS_MIDI_INPUT            FALSE
     NEEDS_MIDI_OUTPUT           FALSE
     IS_MIDI_EFFECT              FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD     FALSE
+    VST3_AUTO_MANIFEST          FALSE
 )
 
 target_sources(RockDrumEnhancer
@@ -41,7 +45,8 @@ target_sources(RockDrumEnhancer
         Source/PluginProcessor.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
-        Source/DrumBusDSP.h
+        Source/CervinizatorDSP.h
+        Source/EmbeddedSamples.h
 )
 
 target_compile_definitions(RockDrumEnhancer

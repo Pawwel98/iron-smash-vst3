@@ -5,12 +5,12 @@
 #include "PluginProcessor.h"
 
 // ============================================================================
-// Custom Rock/Metal Industrial LookAndFeel for Knobs and Toggle Buttons
+// Custom Zakk Cervini Signature LookAndFeel for CERVINIZATOR
 // ============================================================================
-class IronSmashLookAndFeel : public juce::LookAndFeel_V4
+class CervinizatorLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    IronSmashLookAndFeel()
+    CervinizatorLookAndFeel()
     {
         setColour(juce::Slider::textBoxTextColourId, juce::Colour(0xffe2e8f0));
         setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
@@ -35,12 +35,12 @@ public:
                                                  juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
 
-        // Active glowing value arc
+        // Active glowing value arc (Neon Crimson/Magenta-Orange for CERVINIZATOR)
         juce::Path valArc;
         const float startAnchor = isMainKnob ? rotaryStartAngle : (rotaryStartAngle + rotaryEndAngle) * 0.5f;
         valArc.addCentredArc(centreX, centreY, radius + 4.0f, radius + 4.0f, 0.0f,
                              startAnchor, angle, true);
-        const juce::Colour glowCol = isMainKnob ? juce::Colour(0xffff5500) : juce::Colour(0xfff59e0b);
+        const juce::Colour glowCol = isMainKnob ? juce::Colour(0xffff2a5f) : juce::Colour(0xfff59e0b);
         g.setColour(glowCol);
         g.strokePath(valArc, juce::PathStrokeType(isMainKnob ? 6.0f : 3.5f,
                                                   juce::PathStrokeType::curved,
@@ -48,7 +48,7 @@ public:
 
         // Metallic knob body
         juce::ColourGradient bodyGrad(juce::Colour(0xff384152), centreX - radius * 0.5f, centreY - radius * 0.5f,
-                                      juce::Colour(0xff131720), centreX + radius * 0.5f, centreY + radius * 0.5f, true);
+                                      juce::Colour(0xff11151e), centreX + radius * 0.5f, centreY + radius * 0.5f, true);
         g.setGradientFill(bodyGrad);
         g.fillEllipse(centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f);
 
@@ -64,7 +64,7 @@ public:
         pointer.addRoundedRectangle(-pointerThickness * 0.5f, -radius + 6.0f,
                                     pointerThickness, pointerLen * 0.45f, 1.5f);
         pointer.applyTransform(juce::AffineTransform::rotation(angle).translated(centreX, centreY));
-        g.setColour(isMainKnob ? juce::Colour(0xffff6b1a) : juce::Colour(0xfffbbf24));
+        g.setColour(isMainKnob ? juce::Colour(0xffff3b6b) : juce::Colour(0xfffbbf24));
         g.fillPath(pointer);
 
         juce::ignoreUnused(slider);
@@ -77,8 +77,7 @@ public:
         const bool isOn = button.getToggleState();
         const bool isBypassBtn = button.getName() == "BYPASS";
 
-        // Active color: red/amber warning for BYPASS, fiery orange-red for LIMIT
-        const juce::Colour activeCol = isBypassBtn ? juce::Colour(0xffef4444) : juce::Colour(0xffff5500);
+        const juce::Colour activeCol = isBypassBtn ? juce::Colour(0xffef4444) : juce::Colour(0xffff2a5f);
 
         g.setColour(isOn ? activeCol.withAlpha(0.22f) : juce::Colour(0xff161a22));
         g.fillRoundedRectangle(bounds, 6.0f);
@@ -86,7 +85,6 @@ public:
         g.setColour(isOn ? activeCol : (shouldDrawButtonAsHighlighted ? juce::Colour(0xff64748b) : juce::Colour(0xff334155)));
         g.drawRoundedRectangle(bounds, 6.0f, 1.5f);
 
-        // Status LED dot on the left of the button
         const float ledSize = 8.0f;
         const float ledX = bounds.getX() + 12.0f;
         const float ledY = bounds.getCentreY() - ledSize * 0.5f;
@@ -94,7 +92,7 @@ public:
         g.fillEllipse(ledX, ledY, ledSize, ledSize);
 
         g.setColour(isOn ? juce::Colours::white : juce::Colour(0xff94a3b8));
-        g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
         g.drawText(button.getButtonText(),
                    bounds.withTrimmedLeft(24.0f),
                    juce::Justification::centred, false);
@@ -102,20 +100,14 @@ public:
 };
 
 // ============================================================================
-// Main Plugin Editor Window
-// Layout:
-// - Top-Left:  INPUT small rotary knob (-24 dB .. +24 dB, default 0.0 dB)
-// - Top-Right: OUTPUT small rotary knob (-24 dB .. +24 dB, default 0.0 dB)
-// - Center:    ENHANCE massive One-Knob (0% .. 100%)
-// - Bottom-Left:  BYPASS toggle switch
-// - Bottom-Right: LIMIT (0 dB Drum Bus Limiter) toggle button
+// CERVINIZATOR Main Editor Window
 // ============================================================================
-class RockDrumEnhancerAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                             private juce::Timer
+class CervinizatorAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                         private juce::Timer
 {
 public:
-    explicit RockDrumEnhancerAudioProcessorEditor(RockDrumEnhancerAudioProcessor&);
-    ~RockDrumEnhancerAudioProcessorEditor() override;
+    explicit CervinizatorAudioProcessorEditor(CervinizatorAudioProcessor&);
+    ~CervinizatorAudioProcessorEditor() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -123,8 +115,8 @@ public:
 private:
     void timerCallback() override;
 
-    RockDrumEnhancerAudioProcessor& audioProcessor;
-    IronSmashLookAndFeel customLookAndFeel;
+    CervinizatorAudioProcessor& audioProcessor;
+    CervinizatorLookAndFeel customLookAndFeel;
 
     juce::Slider inputSlider;
     juce::Slider enhanceSlider;
@@ -146,5 +138,5 @@ private:
     std::unique_ptr<ButtonAttachment> bypassAttachment;
     std::unique_ptr<ButtonAttachment> limitAttachment;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RockDrumEnhancerAudioProcessorEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CervinizatorAudioProcessorEditor)
 };

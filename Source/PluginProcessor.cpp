@@ -1,7 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-RockDrumEnhancerAudioProcessor::RockDrumEnhancerAudioProcessor()
+CervinizatorAudioProcessor::CervinizatorAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
     : AudioProcessor(BusesProperties()
                      .withInput("Input",  juce::AudioChannelSet::stereo(), true)
@@ -18,7 +18,7 @@ RockDrumEnhancerAudioProcessor::RockDrumEnhancerAudioProcessor()
     limitParam   = apvts.getRawParameterValue("LIMIT");
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout RockDrumEnhancerAudioProcessor::createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout CervinizatorAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
@@ -30,10 +30,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout RockDrumEnhancerAudioProcess
         0.0f,
         juce::AudioParameterFloatAttributes().withLabel("dB")));
 
-    // Center One-Knob: ENHANCE (0% .. 100%, default 50%)
+    // Center One-Knob: CERVINIZE (0% .. 100%, default 50%)
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "ENHANCE", 1 },
-        "Drum Smash (Enhance)",
+        "Cervinize",
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f),
         50.0f,
         juce::AudioParameterFloatAttributes().withLabel("%")));
@@ -61,18 +61,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout RockDrumEnhancerAudioProcess
     return { params.begin(), params.end() };
 }
 
-void RockDrumEnhancerAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
+void CervinizatorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
     dspChain.prepare(sampleRate);
 }
 
-void RockDrumEnhancerAudioProcessor::releaseResources()
+void CervinizatorAudioProcessor::releaseResources()
 {
     dspChain.reset();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
-bool RockDrumEnhancerAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+bool CervinizatorAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
     const auto& mainIn  = layouts.getMainInputChannelSet();
     const auto& mainOut = layouts.getMainOutputChannelSet();
@@ -85,7 +85,7 @@ bool RockDrumEnhancerAudioProcessor::isBusesLayoutSupported(const BusesLayout& l
 }
 #endif
 
-void RockDrumEnhancerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
+void CervinizatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -96,13 +96,13 @@ void RockDrumEnhancerAudioProcessor::processBlock(juce::AudioBuffer<float>& buff
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, numSamples);
 
-    const float inDb      = inputParam->load(std::memory_order_relaxed);
-    const float enhance01 = enhanceParam->load(std::memory_order_relaxed) * 0.01f;
-    const float outDb     = outputParam->load(std::memory_order_relaxed);
-    const bool  bypassed  = bypassParam->load(std::memory_order_relaxed) > 0.5f;
-    const bool  limitOn   = limitParam->load(std::memory_order_relaxed) > 0.5f;
+    const float inDb        = inputParam->load(std::memory_order_relaxed);
+    const float cervinize01 = enhanceParam->load(std::memory_order_relaxed) * 0.01f;
+    const float outDb       = outputParam->load(std::memory_order_relaxed);
+    const bool  bypassed    = bypassParam->load(std::memory_order_relaxed) > 0.5f;
+    const bool  limitOn     = limitParam->load(std::memory_order_relaxed) > 0.5f;
 
-    dspChain.setParameters(inDb, enhance01, outDb, bypassed, limitOn);
+    dspChain.setParameters(inDb, cervinize01, outDb, bypassed, limitOn);
 
     float* leftChannel  = buffer.getWritePointer(0);
     float* rightChannel = (totalNumInputChannels > 1) ? buffer.getWritePointer(1) : nullptr;
@@ -126,25 +126,27 @@ void RockDrumEnhancerAudioProcessor::processBlock(juce::AudioBuffer<float>& buff
         outPeak = std::max(outPeak, std::max(std::fabs(L), std::fabs(R)));
     }
 
-    inputPeakDb.store(IronSmashDSP::gainToDb(inPeak), std::memory_order_relaxed);
-    outputPeakDb.store(IronSmashDSP::gainToDb(outPeak), std::memory_order_relaxed);
+    inputPeakDb.store(CervinizatorDSP::gainToDb(inPeak), std::memory_order_relaxed);
+    outputPeakDb.store(CervinizatorDSP::gainToDb(outPeak), std::memory_order_relaxed);
     totalGrDb.store(dspChain.getCompressorGR() + dspChain.getLimiterGR(), std::memory_order_relaxed);
     limiterActiveFlag.store(dspChain.getLimiterGR() > 0.1f, std::memory_order_relaxed);
+    kickTrigFlag.store(dspChain.isKickTriggered(), std::memory_order_relaxed);
+    snareTrigFlag.store(dspChain.isSnareTriggered(), std::memory_order_relaxed);
 }
 
-juce::AudioProcessorEditor* RockDrumEnhancerAudioProcessor::createEditor()
+juce::AudioProcessorEditor* CervinizatorAudioProcessor::createEditor()
 {
-    return new RockDrumEnhancerAudioProcessorEditor(*this);
+    return new CervinizatorAudioProcessorEditor(*this);
 }
 
-void RockDrumEnhancerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+void CervinizatorAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
 
-void RockDrumEnhancerAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+void CervinizatorAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
@@ -153,5 +155,5 @@ void RockDrumEnhancerAudioProcessor::setStateInformation(const void* data, int s
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new RockDrumEnhancerAudioProcessor();
+    return new CervinizatorAudioProcessor();
 }
