@@ -47,6 +47,7 @@ target_sources(RockDrumEnhancer
         Source/PluginEditor.h
         Source/CervinizatorDSP.h
         Source/EmbeddedSamples.h
+        Source/EmbeddedGraphics.h
 )
 
 target_compile_definitions(RockDrumEnhancer
