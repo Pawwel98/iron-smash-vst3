@@ -22,7 +22,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout CervinizatorAudioProcessor::
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    // Top-left knob: INPUT (-24 dB .. +24 dB, default 0.0 dB at center)
+    // Top-left knob: INPUT (-24 dB .. +24 dB, default 0.0 dB at 12 o'clock)
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "INPUT", 1 },
         "Input Gain",
@@ -30,15 +30,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout CervinizatorAudioProcessor::
         0.0f,
         juce::AudioParameterFloatAttributes().withLabel("dB")));
 
-    // Center One-Knob: CERVINIZE (0% .. 100%, default 50%)
+    // Center One-Knob: CERVINIZE (0% .. 100%, default 0.0% so plugin opens at zero processing!)
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "ENHANCE", 1 },
         "Cervinize",
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f),
-        50.0f,
+        0.0f,
         juce::AudioParameterFloatAttributes().withLabel("%")));
 
-    // Top-right knob: OUTPUT (-24 dB .. +24 dB, default 0.0 dB at center)
+    // Top-right knob: OUTPUT (-24 dB .. +24 dB, default 0.0 dB at 12 o'clock)
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "OUTPUT", 1 },
         "Output Gain",
@@ -61,9 +61,38 @@ juce::AudioProcessorValueTreeState::ParameterLayout CervinizatorAudioProcessor::
     return { params.begin(), params.end() };
 }
 
+void CervinizatorAudioProcessor::startInputCalibration() noexcept
+{
+    calibSamplesCollected = 0;
+    calibMaxPeak = 0.0f;
+    calibSumSq = 0.0;
+    calibProgress.store(0.0f, std::memory_order_relaxed);
+    hasPendingCalibDb.store(false, std::memory_order_relaxed);
+    calibState.store(static_cast<int>(CalibState::WaitingForAudio), std::memory_order_relaxed);
+}
+
+void CervinizatorAudioProcessor::cancelInputCalibration() noexcept
+{
+    calibState.store(static_cast<int>(CalibState::Idle), std::memory_order_relaxed);
+    calibProgress.store(0.0f, std::memory_order_relaxed);
+    hasPendingCalibDb.store(false, std::memory_order_relaxed);
+}
+
+bool CervinizatorAudioProcessor::consumePendingCalibDb(float& outDb) noexcept
+{
+    if (hasPendingCalibDb.exchange(false, std::memory_order_relaxed))
+    {
+        outDb = calibratedDb.load(std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
 void CervinizatorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
+    currentSampleRate = sampleRate;
     dspChain.prepare(sampleRate);
+    setLatencySamples(dspChain.getLatencySamples());
 }
 
 void CervinizatorAudioProcessor::releaseResources()
@@ -96,6 +125,66 @@ void CervinizatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, numSamples);
 
+    float* leftChannel  = buffer.getWritePointer(0);
+    float* rightChannel = (totalNumInputChannels > 1) ? buffer.getWritePointer(1) : nullptr;
+
+    // ------------------------------------------------------------------------
+    // Shift + LMB Auto-Input Calibration Analysis (measures raw pre-gain drums)
+    // ------------------------------------------------------------------------
+    const int cState = calibState.load(std::memory_order_relaxed);
+    if (cState == static_cast<int>(CalibState::WaitingForAudio) ||
+        cState == static_cast<int>(CalibState::Analyzing))
+    {
+        float blockPeak = 0.0f;
+        double blockSumSq = 0.0;
+        for (int s = 0; s < numSamples; ++s)
+        {
+            const float L = leftChannel[s];
+            const float R = (rightChannel != nullptr) ? rightChannel[s] : L;
+            const float pk = std::max(std::fabs(L), std::fabs(R));
+            blockPeak = std::max(blockPeak, pk);
+            blockSumSq += 0.5 * static_cast<double>(L * L + R * R);
+        }
+
+        // Detect drum audio above -46 dBFS (0.005 linear)
+        if (blockPeak > 0.005f)
+        {
+            if (cState == static_cast<int>(CalibState::WaitingForAudio))
+            {
+                calibSamplesCollected = 0;
+                calibMaxPeak = 0.0f;
+                calibSumSq = 0.0;
+                calibState.store(static_cast<int>(CalibState::Analyzing), std::memory_order_relaxed);
+            }
+
+            calibMaxPeak = std::max(calibMaxPeak, blockPeak);
+            calibSumSq += blockSumSq;
+            calibSamplesCollected += numSamples;
+
+            const int targetSamples = std::max(1, static_cast<int>(2.2 * currentSampleRate));
+            const float prog = std::clamp(static_cast<float>(calibSamplesCollected) / static_cast<float>(targetSamples), 0.0f, 1.0f);
+            calibProgress.store(prog, std::memory_order_relaxed);
+
+            // Compute optimal input gain so drum peaks hit -4.2 dBFS and active RMS hits -14.0 dBFS
+            // (the exact sweet spot for our Kick/Snare trigger thresholds and Bus Compressor)
+            const float measuredPeakDb = CervinizatorDSP::gainToDb(std::max(calibMaxPeak, 0.005f));
+            const float measuredRms = static_cast<float>(std::sqrt(calibSumSq / std::max(1, calibSamplesCollected)));
+            const float measuredRmsDb = CervinizatorDSP::gainToDb(std::max(measuredRms, 0.001f));
+
+            const float neededForPeakDb = -4.2f - measuredPeakDb;
+            const float neededForRmsDb  = -14.0f - measuredRmsDb;
+            const float optimalDb = std::clamp(0.65f * neededForPeakDb + 0.35f * neededForRmsDb, -24.0f, 24.0f);
+
+            calibratedDb.store(optimalDb, std::memory_order_relaxed);
+            hasPendingCalibDb.store(true, std::memory_order_relaxed);
+
+            if (calibSamplesCollected >= targetSamples)
+            {
+                calibState.store(static_cast<int>(CalibState::Complete), std::memory_order_relaxed);
+            }
+        }
+    }
+
     const float inDb        = inputParam->load(std::memory_order_relaxed);
     const float cervinize01 = enhanceParam->load(std::memory_order_relaxed) * 0.01f;
     const float outDb       = outputParam->load(std::memory_order_relaxed);
@@ -104,34 +193,17 @@ void CervinizatorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
 
     dspChain.setParameters(inDb, cervinize01, outDb, bypassed, limitOn);
 
-    float* leftChannel  = buffer.getWritePointer(0);
-    float* rightChannel = (totalNumInputChannels > 1) ? buffer.getWritePointer(1) : nullptr;
-
-    float inPeak  = 0.0f;
-    float outPeak = 0.0f;
-
     for (int s = 0; s < numSamples; ++s)
     {
         float L = leftChannel[s];
         float R = (rightChannel != nullptr) ? rightChannel[s] : L;
-
-        inPeak = std::max(inPeak, std::max(std::fabs(L), std::fabs(R)));
 
         dspChain.processStereoSample(L, R);
 
         leftChannel[s] = L;
         if (rightChannel != nullptr)
             rightChannel[s] = R;
-
-        outPeak = std::max(outPeak, std::max(std::fabs(L), std::fabs(R)));
     }
-
-    inputPeakDb.store(CervinizatorDSP::gainToDb(inPeak), std::memory_order_relaxed);
-    outputPeakDb.store(CervinizatorDSP::gainToDb(outPeak), std::memory_order_relaxed);
-    totalGrDb.store(dspChain.getCompressorGR() + dspChain.getLimiterGR(), std::memory_order_relaxed);
-    limiterActiveFlag.store(dspChain.getLimiterGR() > 0.1f, std::memory_order_relaxed);
-    kickTrigFlag.store(dspChain.isKickTriggered(), std::memory_order_relaxed);
-    snareTrigFlag.store(dspChain.isSnareTriggered(), std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor* CervinizatorAudioProcessor::createEditor()

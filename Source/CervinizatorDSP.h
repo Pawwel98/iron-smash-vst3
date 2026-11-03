@@ -1238,7 +1238,7 @@ private:
 
     float smoothCoeff = 0.99f;
     float targetInputGain = 1.0f, currInputGain = 1.0f;
-    float targetCervinize = 0.5f, currCervinize = 0.5f;
+    float targetCervinize = 0.0f, currCervinize = 0.0f;
     float targetOutputGain = 1.0f, currOutputGain = 1.0f;
     float targetBypassMix = 1.0f, currActiveMix = 1.0f;
     bool limiterEnabled = true;

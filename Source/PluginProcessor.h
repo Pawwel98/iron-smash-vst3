@@ -7,6 +7,14 @@
 class CervinizatorAudioProcessor : public juce::AudioProcessor
 {
 public:
+    enum class CalibState : int
+    {
+        Idle = 0,
+        WaitingForAudio = 1,
+        Analyzing = 2,
+        Complete = 3
+    };
+
     CervinizatorAudioProcessor();
     ~CervinizatorAudioProcessor() override = default;
 
@@ -40,16 +48,17 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Thread-safe metering & trigger indicators for the GUI
-    float getInputLevelDb() const noexcept        { return inputPeakDb.load(std::memory_order_relaxed); }
-    float getOutputLevelDb() const noexcept       { return outputPeakDb.load(std::memory_order_relaxed); }
-    float getTotalGainReductionDb() const noexcept { return totalGrDb.load(std::memory_order_relaxed); }
-    bool  isLimiterClipping() const noexcept      { return limiterActiveFlag.load(std::memory_order_relaxed); }
-    bool  isKickTriggered() const noexcept        { return kickTrigFlag.load(std::memory_order_relaxed); }
-    bool  isSnareTriggered() const noexcept       { return snareTrigFlag.load(std::memory_order_relaxed); }
+    // Shift + LMB Auto-Input Calibration API
+    void startInputCalibration() noexcept;
+    void cancelInputCalibration() noexcept;
+    CalibState getCalibrationState() const noexcept { return static_cast<CalibState>(calibState.load(std::memory_order_relaxed)); }
+    float getCalibrationProgress() const noexcept   { return calibProgress.load(std::memory_order_relaxed); }
+    float getCalibratedInputDb() const noexcept     { return calibratedDb.load(std::memory_order_relaxed); }
+    bool consumePendingCalibDb(float& outDb) noexcept;
 
 private:
     CervinizatorDSP::CervinizatorChain dspChain;
+    double currentSampleRate = 48000.0;
 
     std::atomic<float>* inputParam   = nullptr;
     std::atomic<float>* enhanceParam = nullptr;
@@ -57,12 +66,15 @@ private:
     std::atomic<float>* bypassParam  = nullptr;
     std::atomic<float>* limitParam   = nullptr;
 
-    std::atomic<float> inputPeakDb  { -60.0f };
-    std::atomic<float> outputPeakDb { -60.0f };
-    std::atomic<float> totalGrDb    { 0.0f };
-    std::atomic<bool>  limiterActiveFlag { false };
-    std::atomic<bool>  kickTrigFlag      { false };
-    std::atomic<bool>  snareTrigFlag     { false };
+    // Auto-calibration state
+    std::atomic<int>   calibState          { static_cast<int>(CalibState::Idle) };
+    std::atomic<float> calibProgress       { 0.0f };
+    std::atomic<float> calibratedDb        { 0.0f };
+    std::atomic<bool>  hasPendingCalibDb   { false };
+
+    int    calibSamplesCollected = 0;
+    float  calibMaxPeak          = 0.0f;
+    double calibSumSq            = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CervinizatorAudioProcessor)
 };

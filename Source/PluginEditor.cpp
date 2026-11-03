@@ -1,56 +1,69 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+juce::Image CervinizatorAudioProcessorEditor::loadEmbeddedImage(const char* const* chunks, std::size_t numChunks)
+{
+    auto bytes = CervinizatorGraphics::decodeBase64Chunks(chunks, numChunks);
+    return juce::ImageFileFormat::loadFrom(bytes.data(), bytes.size());
+}
+
 CervinizatorAudioProcessorEditor::CervinizatorAudioProcessorEditor(CervinizatorAudioProcessor& p)
     : AudioProcessorEditor(&p), audioProcessor(p)
 {
+    // Decode embedded 2x Photoshop layers
+    bg0Image   = loadEmbeddedImage(CervinizatorGraphics::kBg0Chunks,   CervinizatorGraphics::kBg0NumChunks);
+    bg100Image = loadEmbeddedImage(CervinizatorGraphics::kBg100Chunks, CervinizatorGraphics::kBg100NumChunks);
+
+    customLookAndFeel.knobMainImg   = loadEmbeddedImage(CervinizatorGraphics::kKnobMainChunks,   CervinizatorGraphics::kKnobMainNumChunks);
+    customLookAndFeel.knobMainOvImg = loadEmbeddedImage(CervinizatorGraphics::kKnobMainOvChunks, CervinizatorGraphics::kKnobMainOvNumChunks);
+    customLookAndFeel.knobInImg     = loadEmbeddedImage(CervinizatorGraphics::kKnobInChunks,     CervinizatorGraphics::kKnobInNumChunks);
+    customLookAndFeel.knobInOvImg   = loadEmbeddedImage(CervinizatorGraphics::kKnobInOvChunks,   CervinizatorGraphics::kKnobInOvNumChunks);
+    customLookAndFeel.knobOutImg    = loadEmbeddedImage(CervinizatorGraphics::kKnobOutChunks,    CervinizatorGraphics::kKnobOutNumChunks);
+    customLookAndFeel.knobOutOvImg  = loadEmbeddedImage(CervinizatorGraphics::kKnobOutOvChunks,  CervinizatorGraphics::kKnobOutOvNumChunks);
+    customLookAndFeel.bypassOffImg  = loadEmbeddedImage(CervinizatorGraphics::kBypassOffChunks,  CervinizatorGraphics::kBypassOffNumChunks);
+    customLookAndFeel.bypassOnImg   = loadEmbeddedImage(CervinizatorGraphics::kBypassOnChunks,   CervinizatorGraphics::kBypassOnNumChunks);
+    customLookAndFeel.limitOffImg   = loadEmbeddedImage(CervinizatorGraphics::kLimitOffChunks,   CervinizatorGraphics::kLimitOffNumChunks);
+    customLookAndFeel.limitOnImg    = loadEmbeddedImage(CervinizatorGraphics::kLimitOnChunks,    CervinizatorGraphics::kLimitOnNumChunks);
+
     setLookAndFeel(&customLookAndFeel);
     setSize(480, 520);
 
-    // 1. Top-Left Knob: INPUT (-24 .. +24 dB, default 0.0 dB)
+    // 1. Top-Left Knob: INPUT (-24 .. +24 dB, default 0.0 dB, Shift+LMB = Auto-Calibration)
+    inputSlider.setName("INPUT");
     inputSlider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-    inputSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 72, 18);
+    inputSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     inputSlider.setDoubleClickReturnValue(true, 0.0);
+    inputSlider.onShiftClick = [this]()
+    {
+        audioProcessor.startInputCalibration();
+        calibCompleteHoldTicks = 0;
+        repaint();
+    };
     addAndMakeVisible(inputSlider);
 
-    inputLabel.setText("INPUT", juce::dontSendNotification);
-    inputLabel.setJustificationType(juce::Justification::centred);
-    inputLabel.setFont(juce::Font(12.5f, juce::Font::bold));
-    inputLabel.setColour(juce::Label::textColourId, juce::Colour(0xff94a3b8));
-    addAndMakeVisible(inputLabel);
-
     // 2. Top-Right Knob: OUTPUT (-24 .. +24 dB, default 0.0 dB)
+    outputSlider.setName("OUTPUT");
     outputSlider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-    outputSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 72, 18);
+    outputSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     outputSlider.setDoubleClickReturnValue(true, 0.0);
     addAndMakeVisible(outputSlider);
 
-    outputLabel.setText("OUTPUT", juce::dontSendNotification);
-    outputLabel.setJustificationType(juce::Justification::centred);
-    outputLabel.setFont(juce::Font(12.5f, juce::Font::bold));
-    outputLabel.setColour(juce::Label::textColourId, juce::Colour(0xff94a3b8));
-    addAndMakeVisible(outputLabel);
-
-    // 3. Center Main One-Knob: CERVINIZE (0% .. 100%)
+    // 3. Center Main One-Knob: CERVINIZE (0% .. 100%, default 0.0%)
+    enhanceSlider.setName("ENHANCE");
     enhanceSlider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-    enhanceSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 90, 22);
-    enhanceSlider.setDoubleClickReturnValue(true, 50.0);
+    enhanceSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    enhanceSlider.setDoubleClickReturnValue(true, 0.0);
+    enhanceSlider.onValueChange = [this]() { repaint(); };
     addAndMakeVisible(enhanceSlider);
 
-    enhanceLabel.setText("CERVINIZE", juce::dontSendNotification);
-    enhanceLabel.setJustificationType(juce::Justification::centred);
-    enhanceLabel.setFont(juce::Font(15.0f, juce::Font::bold));
-    enhanceLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff3b6b));
-    addAndMakeVisible(enhanceLabel);
-
-    // 4. Bottom-Left Toggle: BYPASS
+    // 4. Bottom-Left Button: BYPASS
     bypassButton.setName("BYPASS");
-    bypassButton.setButtonText("BYPASS");
+    bypassButton.setButtonText("");
     addAndMakeVisible(bypassButton);
 
-    // 5. Bottom-Right Button: LIMIT (0 dB Drum Bus Limiter)
+    // 5. Bottom-Right Button: LIMIT
     limitButton.setName("LIMIT");
-    limitButton.setButtonText("LIMIT 0dB");
+    limitButton.setButtonText("");
     addAndMakeVisible(limitButton);
 
     // Bind controls to AudioProcessorValueTreeState
@@ -69,102 +82,246 @@ CervinizatorAudioProcessorEditor::~CervinizatorAudioProcessorEditor()
     setLookAndFeel(nullptr);
 }
 
+void CervinizatorAudioProcessorEditor::mouseDown(const juce::MouseEvent& /*e*/)
+{
+    if (audioProcessor.getCalibrationState() != CervinizatorAudioProcessor::CalibState::Idle)
+    {
+        audioProcessor.cancelInputCalibration();
+        repaint();
+    }
+}
+
 void CervinizatorAudioProcessorEditor::timerCallback()
 {
-    repaint();
+    // 1. Apply any new calibrated INPUT gain computed by the audio thread
+    float newCalibDb = 0.0f;
+    if (audioProcessor.consumePendingCalibDb(newCalibDb))
+    {
+        inputSlider.setValue(newCalibDb, juce::sendNotificationSync);
+    }
+
+    const auto cState = audioProcessor.getCalibrationState();
+    if (cState == CervinizatorAudioProcessor::CalibState::Complete)
+    {
+        if (++calibCompleteHoldTicks >= 40) // Hold completion message for ~1.3s then close
+        {
+            audioProcessor.cancelInputCalibration();
+            calibCompleteHoldTicks = 0;
+        }
+        repaint();
+        return;
+    }
+    else if (cState != CervinizatorAudioProcessor::CalibState::Idle)
+    {
+        hoveredControlId = -1;
+        hoverTicks = 0;
+        activeTooltipText.clear();
+        repaint();
+        return;
+    }
+
+    // 2. Hover Tooltip detection (~650 ms = 20 ticks at 30 Hz without mouse button pressed)
+    const auto mousePos = getMouseXYRelative();
+    const bool mouseDownNow = juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown();
+
+    int newHoverId = -1;
+    juce::String tipText;
+    juce::Rectangle<float> targetRect;
+
+    if (!mouseDownNow && isMouseOver(true))
+    {
+        if (enhanceSlider.getBounds().contains(mousePos))
+        {
+            newHoverId = 1;
+            tipText = "CERVINIZATION - The more you turn this knob, the more your drums fly into Octane playlists.";
+            targetRect = enhanceSlider.getBounds().toFloat();
+        }
+        else if (inputSlider.getBounds().contains(mousePos))
+        {
+            newHoverId = 2;
+            tipText = "SHIFT+LMB to calibrate input signal. Use this if nature didn't bless you with ears.";
+            targetRect = inputSlider.getBounds().toFloat();
+        }
+        else if (outputSlider.getBounds().contains(mousePos))
+        {
+            newHoverId = 3;
+            tipText = "Output volume of drums processed by the greatest plugin in the world.";
+            targetRect = outputSlider.getBounds().toFloat();
+        }
+        else if (bypassButton.getBounds().contains(mousePos))
+        {
+            newHoverId = 4;
+            tipText = "The truest, most genuine, sincere, and unbelievable Bypass in the world.";
+            targetRect = bypassButton.getBounds().toFloat();
+        }
+        else if (limitButton.getBounds().contains(mousePos))
+        {
+            newHoverId = 5;
+            tipText = "I'm actually a clipper, but you won't tell the difference anyway.";
+            targetRect = limitButton.getBounds().toFloat();
+        }
+    }
+
+    if (newHoverId != -1 && newHoverId == hoveredControlId)
+    {
+        if (hoverTicks < 100)
+            ++hoverTicks;
+        if (hoverTicks == 20) // ~650 ms hover threshold reached
+        {
+            activeTooltipText = tipText;
+            activeTooltipTargetBounds = targetRect;
+            repaint();
+        }
+    }
+    else
+    {
+        const bool wasShowing = activeTooltipText.isNotEmpty();
+        hoveredControlId = newHoverId;
+        hoverTicks = 0;
+        activeTooltipText.clear();
+        if (wasShowing)
+            repaint();
+    }
 }
 
 void CervinizatorAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    // Dark brushed metal chassis background
-    juce::ColourGradient bgGrad(juce::Colour(0xff141622), 0.0f, 0.0f,
-                                juce::Colour(0xff090b10), 0.0f, static_cast<float>(getHeight()), false);
-    g.setGradientFill(bgGrad);
-    g.fillAll();
+    g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
 
-    // Industrial border & corner rivets
-    auto frame = getLocalBounds().toFloat().reduced(8.0f);
-    g.setColour(juce::Colour(0xff262d3b));
-    g.drawRoundedRectangle(frame, 10.0f, 2.0f);
+    const auto bounds = getLocalBounds().toFloat();
 
-    const float rivetLocations[4][2] = {
-        { 18.0f, 18.0f },
-        { static_cast<float>(getWidth()) - 26.0f, 18.0f },
-        { 18.0f, static_cast<float>(getHeight()) - 26.0f },
-        { static_cast<float>(getWidth()) - 26.0f, static_cast<float>(getHeight()) - 26.0f }
-    };
-    g.setColour(juce::Colour(0xff334155));
-    for (const auto& pt : rivetLocations)
-        g.fillEllipse(pt[0], pt[1], 8.0f, 8.0f);
+    // 1. Draw base background (0% position)
+    if (bg0Image.isValid())
+        g.drawImage(bg0Image, bounds);
+    else
+        g.fillAll(juce::Colour(0xff141820));
 
-    // Top Center Title Banner
-    g.setColour(juce::Colour(0xfff8fafc));
-    g.setFont(juce::Font(21.0f, juce::Font::bold));
-    g.drawText("CERVINIZATOR", 0, 18, getWidth(), 24, juce::Justification::centred);
+    // 2. Smoothly crossfade background_100 proportionally to the main CERVINIZE knob (0% -> 100%)
+    const float main01 = juce::jlimit(0.0f, 1.0f, static_cast<float>(enhanceSlider.getValue()) * 0.01f);
+    if (bg100Image.isValid() && main01 > 0.001f)
+    {
+        g.setOpacity(main01);
+        g.drawImage(bg100Image, bounds);
+        g.setOpacity(1.0f);
+    }
+}
 
-    g.setColour(juce::Colour(0xff94a3b8));
-    g.setFont(juce::Font(10.5f, juce::Font::plain));
-    g.drawText("ZAKK CERVINI STYLE DRUM BUS + KICK/SNARE REINFORCER", 0, 40, getWidth(), 16, juce::Justification::centred);
+void CervinizatorAudioProcessorEditor::paintOverChildren(juce::Graphics& g)
+{
+    // 1. Draw Shift + LMB Auto-Calibration Popup Window when active
+    const auto cState = audioProcessor.getCalibrationState();
+    if (cState != CervinizatorAudioProcessor::CalibState::Idle)
+    {
+        g.setColour(juce::Colours::black.withAlpha(0.62f));
+        g.fillRect(getLocalBounds());
 
-    // Reactive glow behind the central One-Knob proportional to GR, Sample Trigger, & Cervinize
-    const float grDb = audioProcessor.getTotalGainReductionDb();
-    const bool kickOn = audioProcessor.isKickTriggered();
-    const bool snareOn = audioProcessor.isSnareTriggered();
-    const float enhancePct = static_cast<float>(enhanceSlider.getValue()) * 0.01f;
-    const float trigBoost = (kickOn || snareOn) ? 0.15f : 0.0f;
-    const float haloAlpha = juce::jlimit(0.05f, 0.50f, enhancePct * 0.25f + (grDb / 18.0f) * 0.20f + trigBoost);
+        const juce::Rectangle<float> box(55.0f, 195.0f, 370.0f, 130.0f);
+        g.setColour(juce::Colour(0xff111621).withAlpha(0.96f));
+        g.fillRoundedRectangle(box, 10.0f);
 
-    const float cx = static_cast<float>(getWidth()) * 0.5f;
-    const float cy = 265.0f;
-    juce::ColourGradient halo(juce::Colour(0xffff2a5f).withAlpha(haloAlpha), cx, cy,
-                              juce::Colours::transparentBlack, cx + 135.0f, cy + 135.0f, true);
-    g.setGradientFill(halo);
-    g.fillEllipse(cx - 135.0f, cy - 135.0f, 270.0f, 270.0f);
+        g.setColour(juce::Colour(0xffef4444));
+        g.drawRoundedRectangle(box, 10.0f, 2.0f);
 
-    // Status & Sample Trigger Readout Pill above bottom buttons
-    g.setColour(juce::Colour(0xff141923));
-    g.fillRoundedRectangle(48.0f, 410.0f, 384.0f, 28.0f, 6.0f);
-    g.setColour(juce::Colour(0xff2d3748));
-    g.drawRoundedRectangle(48.0f, 410.0f, 384.0f, 28.0f, 6.0f, 1.0f);
+        g.setColour(juce::Colours::white);
+        g.setFont(juce::Font(15.0f, juce::Font::bold));
 
-    // Draw KICK and SNARE sample trigger LED badges on the left side of the status bar
-    g.setColour(kickOn ? juce::Colour(0xff22c55e) : juce::Colour(0xff334155));
-    g.fillEllipse(60.0f, 420.0f, 8.0f, 8.0f);
-    g.setColour(kickOn ? juce::Colours::white : juce::Colour(0xff64748b));
-    g.setFont(juce::Font(11.5f, juce::Font::bold));
-    g.drawText("KICK", 72, 410, 42, 28, juce::Justification::centredLeft);
+        if (cState == CervinizatorAudioProcessor::CalibState::WaitingForAudio)
+        {
+            g.drawText("INPUT AUTO-CALIBRATION", box.withHeight(38.0f).translated(0.0f, 10.0f),
+                       juce::Justification::centred, false);
 
-    g.setColour(snareOn ? juce::Colour(0xfff59e0b) : juce::Colour(0xff334155));
-    g.fillEllipse(118.0f, 420.0f, 8.0f, 8.0f);
-    g.setColour(snareOn ? juce::Colours::white : juce::Colour(0xff64748b));
-    g.drawText("SNARE", 130, 410, 50, 28, juce::Justification::centredLeft);
+            g.setColour(juce::Colour(0xffe2e8f0));
+            g.setFont(juce::Font(13.5f, juce::Font::plain));
+            g.drawFittedText("Play your drums audio so we can calibrate the optimal input volume...",
+                             box.reduced(22.0f, 0.0f).withTrimmedTop(44.0f).withHeight(50.0f).toNearestInt(),
+                             juce::Justification::centred, 2);
 
-    // Draw GR & Output peak on the right side of the status bar
-    juce::String statusText = "GR: -" + juce::String(grDb, 1) + " dB  |  OUT: "
-                            + juce::String(audioProcessor.getOutputLevelDb(), 1) + " dB";
-    if (audioProcessor.isLimiterClipping())
-        statusText += " [LIM]";
+            g.setColour(juce::Colour(0xff94a3b8));
+            g.setFont(juce::Font(11.0f, juce::Font::plain));
+            g.drawText("(Click anywhere to cancel)", box.withTrimmedTop(96.0f),
+                       juce::Justification::centred, false);
+        }
+        else if (cState == CervinizatorAudioProcessor::CalibState::Analyzing)
+        {
+            const float prog = audioProcessor.getCalibrationProgress();
+            g.drawText("CALIBRATING INPUT LEVEL...", box.withHeight(36.0f).translated(0.0f, 10.0f),
+                       juce::Justification::centred, false);
 
-    g.setColour(audioProcessor.isLimiterClipping() ? juce::Colour(0xffff3b6b) : juce::Colour(0xffcbd5e1));
-    g.setFont(juce::Font(11.5f, juce::Font::bold));
-    g.drawText(statusText, 185, 410, 238, 28, juce::Justification::centredRight);
+            g.setColour(juce::Colour(0xffe2e8f0));
+            g.setFont(juce::Font(13.0f, juce::Font::plain));
+            g.drawText("Analyzing drum transients (" + juce::String(static_cast<int>(prog * 100.0f)) + "%)",
+                       box.withTrimmedTop(42.0f).withHeight(28.0f),
+                       juce::Justification::centred, false);
+
+            // Progress bar
+            const juce::Rectangle<float> barBg(box.getX() + 35.0f, box.getY() + 80.0f, box.getWidth() - 70.0f, 14.0f);
+            g.setColour(juce::Colour(0xff1e293b));
+            g.fillRoundedRectangle(barBg, 6.0f);
+
+            g.setColour(juce::Colour(0xffef4444));
+            g.fillRoundedRectangle(barBg.withWidth(barBg.getWidth() * prog), 6.0f);
+        }
+        else if (cState == CervinizatorAudioProcessor::CalibState::Complete)
+        {
+            const float finalDb = audioProcessor.getCalibratedInputDb();
+            const juce::String sign = (finalDb >= 0.0f) ? "+" : "";
+            g.setColour(juce::Colour(0xff22c55e));
+            g.drawText("CALIBRATION COMPLETE!", box.withHeight(42.0f).translated(0.0f, 16.0f),
+                       juce::Justification::centred, false);
+
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::Font(14.0f, juce::Font::bold));
+            g.drawText("Optimal Input set to " + sign + juce::String(finalDb, 1) + " dB",
+                       box.withTrimmedTop(58.0f).withHeight(40.0f),
+                       juce::Justification::centred, false);
+        }
+        return;
+    }
+
+    // 2. Draw Delayed Hover Tooltip Card
+    if (activeTooltipText.isNotEmpty())
+    {
+        const float tipW = 250.0f;
+        const float tipH = 54.0f;
+        float tipX = activeTooltipTargetBounds.getCentreX() - tipW * 0.5f;
+        float tipY = activeTooltipTargetBounds.getY() - tipH - 8.0f;
+
+        // Keep tooltip inside window bounds
+        tipX = juce::jlimit(10.0f, static_cast<float>(getWidth()) - tipW - 10.0f, tipX);
+        if (tipY < 10.0f)
+            tipY = activeTooltipTargetBounds.getBottom() + 8.0f;
+
+        const juce::Rectangle<float> tipBox(tipX, tipY, tipW, tipH);
+
+        g.setColour(juce::Colour(0xff0f141d).withAlpha(0.95f));
+        g.fillRoundedRectangle(tipBox, 7.0f);
+
+        g.setColour(juce::Colour(0xffef4444).withAlpha(0.85f));
+        g.drawRoundedRectangle(tipBox, 7.0f, 1.5f);
+
+        g.setColour(juce::Colour(0xfff1f5f9));
+        g.setFont(juce::Font(12.0f, juce::Font::plain));
+        g.drawFittedText(activeTooltipText,
+                         tipBox.reduced(10.0f, 6.0f).toNearestInt(),
+                         juce::Justification::centred, 3);
+    }
 }
 
 void CervinizatorAudioProcessorEditor::resized()
 {
-    // Top-Left: INPUT small knob
-    inputLabel.setBounds(28, 56, 96, 18);
-    inputSlider.setBounds(28, 74, 96, 96);
+    // Exact 1x coordinates corresponding to the 2x (960x1040) Photoshop layers:
+    // Input small knob: 2x crop (80, 154, 144x144) -> 1x (40, 77, 72x72)
+    inputSlider.setBounds(40, 77, 72, 72);
 
-    // Top-Right: OUTPUT small knob
-    outputLabel.setBounds(getWidth() - 124, 56, 96, 18);
-    outputSlider.setBounds(getWidth() - 124, 74, 96, 96);
+    // Output small knob: 2x crop (736, 154, 144x144) -> 1x (368, 77, 72x72)
+    outputSlider.setBounds(368, 77, 72, 72);
 
-    // Center: Massive One-Knob (CERVINIZE)
-    enhanceLabel.setBounds((getWidth() - 220) / 2, 145, 220, 22);
-    enhanceSlider.setBounds((getWidth() - 220) / 2, 168, 220, 228);
+    // Center Main Knob: 2x crop (271, 334, 416x416) -> 1x (136, 167, 208x208)
+    enhanceSlider.setBounds(136, 167, 208, 208);
 
-    // Bottom: BYPASS switch (left) & LIMIT button (right)
-    bypassButton.setBounds(48, 454, 155, 38);
-    limitButton.setBounds(getWidth() - 203, 454, 155, 38);
+    // Bottom-Left Bypass Button: 2x crop (140, 864, 144x124) -> 1x (70, 432, 72x62)
+    bypassButton.setBounds(70, 432, 72, 62);
+
+    // Bottom-Right Limit Button: 2x crop (610, 864, 136x124) -> 1x (305, 432, 68x62)
+    limitButton.setBounds(305, 432, 68, 62);
 }
